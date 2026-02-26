@@ -1,7 +1,7 @@
 import numpy as np
 import scipy as sp
-import circle_fitting as cf
-import resonance_fitting as rf
+import resonator_fitting.include.circle_fitting as cf
+import resonator_fitting.include.resonance_fitting as rf
 import time
 import matplotlib.pyplot as plt
 plt.ion()

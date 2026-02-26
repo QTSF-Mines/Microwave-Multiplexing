@@ -1,6 +1,6 @@
 import numpy as np
 import scipy as sp
-import circle_fitting as cf
+import resonator_fitting.include.circle_fitting as cf
 from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 

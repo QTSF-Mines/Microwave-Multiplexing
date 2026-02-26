@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "microwave_multiplexing"
+version = "0.1.0"
+
+[tool.setuptools]
+# This tells Python: "Look in these specific subfolders for code"
+packages = [
+    "resonator_fitting.include", 
+    "uMux_modeling.include"
+]
