@@ -9,7 +9,7 @@ from scipy.signal import find_peaks
 from matplotlib.ticker import EngFormatter
 
 def savefig(filename):
-    plt.savefig("../../figures/NIST_resonators_test/"+filename+".pdf")
+    plt.savefig(filename+".pdf")
 
 def fit_all_resonators(f, s21, tau, dist = 1.0e6, showplot = False, filename = None, condensed_plots_ids = None):
     peaks = find_all_peaks(f, s21, dist = dist, showplot = showplot, filename = filename)
@@ -60,9 +60,15 @@ def fit_all_resonators(f, s21, tau, dist = 1.0e6, showplot = False, filename = N
 def find_all_peaks(f, s21,dist = 1.0e6 , showplot = False, filename = None):
     s21_flipped = s21.max() - np.abs(s21)
 
+    # Temporary debug plot
+    # plt.figure()
+    # plt.plot(f, s21_flipped)
+    # plt.title("Is this 'flipped' signal showing clear peaks?")
+    # plt.show()
+
     excluded_frequencies = [5.772e9]
 
-    peaks_full, _ = find_peaks(s21_flipped, prominence=0.7, distance=60)
+    peaks_full, _ = find_peaks(s21_flipped, prominence=0.05, distance=10)
 
     collided_peak_indices = set()
 
@@ -80,11 +86,12 @@ def find_all_peaks(f, s21,dist = 1.0e6 , showplot = False, filename = None):
         
 
     final_peaks_list = [p for p in peaks_full if p not in collided_peak_indices]
-    peaks = np.array(final_peaks_list)
+    peaks = np.array(final_peaks_list, dtype=int)
     
     if(showplot):
-        plt.vlines(x=f[peaks], ymin=-10, ymax=21, color='red', linestyle='--', 
-           label='Peak Locations')
+        s21_db = 20*np.log10(np.abs(s21))
+        plt.vlines(x=f[peaks], ymin=s21_db.min(), ymax=s21_db.max(), 
+                color='red', linestyle='--', alpha=0.5, label='Peak Locations')
 
         plt.plot(f, 20*np.log10(np.abs(s21)))
         plt.ylabel("S21 (dB)")

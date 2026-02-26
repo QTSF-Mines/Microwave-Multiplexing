@@ -82,14 +82,7 @@ def fit_resonance(f,s21,showplot=False):
     f0g = f[f0gind]
 
     # Estimate bandwidth (crude)
-    thth = np.linspace(-np.pi/2,np.pi/2,100)
-    thmax = np.zeros(len(thth))
-    for l in range(len(thth)):
-        thmax[l] = np.min(np.array([ np.max(np.imag(s21*np.exp((-1j)*thth[l]))) , -np.min(np.imag(s21*np.exp((-1j)*thth[l]))) ]))
-    ll = np.argmax(thmax)
-    tempz = s21*np.exp((-1j)*thth[ll])
-    
-    #tempz = s21*np.exp((-1j)*np.angle(s21[f0gind]))
+    tempz = s21*np.exp((-1j)*np.angle(s21[f0gind]))
     fhbw1gind = np.argmin(np.imag(tempz))
     fhbw2gind = np.argmax(np.imag(tempz))
     bwg = f[fhbw2gind] - f[fhbw1gind]
@@ -133,7 +126,7 @@ def fit_resonance(f,s21,showplot=False):
         theta = theta + 2*np.pi
 
     # Find point of fastest change around the circle
-    dtheta = sig.savgol_filter(theta,window_length=2*int(nhbw/4)+1,polyorder=2,deriv=1)   # Differentiating filter
+    dtheta = sig.savgol_filter(theta,window_length=2*int(nhbw/4)+1,polyorder=3,deriv=1)   # Differentiating filter
     f0gind = np.argmax(-dtheta)
     f0g = f[f0gind]                                 # New f0 guess at steepest slope of angle
     theta0g = theta[f0gind]                         # Guess at rotation angle

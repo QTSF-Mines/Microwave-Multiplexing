@@ -6,4 +6,7 @@ microwave_multiplexing.egg-info/dependency_links.txt
 microwave_multiplexing.egg-info/top_level.txt
 resonator_fitting/include/all_resonances.py
 resonator_fitting/include/circle_fitting.py
+resonator_fitting/include/fitresonance.py
+resonator_fitting/include/lambdafit.py
+resonator_fitting/include/makefrsurveyplots.py
 resonator_fitting/include/resonance_fitting.py

@@ -5,7 +5,7 @@ from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 
 def savefig(filename):
-    plt.savefig("../../../figures/"+filename+".pdf")
+    plt.savefig(filename+".pdf")
 
 def fit_phase(f_region, z_t, zc, r, plot_mode='none', filename=None):
     phase = np.angle(z_t)
