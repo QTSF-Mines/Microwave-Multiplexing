@@ -4,6 +4,39 @@ import resonator_fitting.include.circle_fitting as cf
 from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 
+import numpy as np
+
+def calculate_tau(f, s21):
+    """
+    Calculates the electrical delay (tau) from S21 data.
+
+    The electrical delay `tau` causes a linear phase shift with frequency.
+    This function estimates tau by finding the average slope of the phase
+    of S21 with respect to frequency.
+
+    Args:
+        f (np.ndarray): Array of frequency data in Hz.
+        s21 (np.ndarray): Array of complex S21 transmission data.
+
+    Returns:
+        float: The estimated electrical delay `tau` in seconds.
+    """
+    # 1. Unwrap the phase to get a continuous phase curve without 2-pi jumps.
+    phase = np.unwrap(np.angle(s21))
+
+    # 2. Fit a 1st-degree polynomial (a line) to the phase vs. frequency data.
+    # The model is phase = slope * f + intercept.
+    # This is more robust to noise than using np.diff().
+    slope, intercept = np.polyfit(f, phase, 1)
+
+    # 3. Calculate tau from the slope.
+    # The relationship is slope = -2 * pi * tau.
+    tau = -slope / (2 * np.pi)
+
+    return tau
+
+
+
 def savefig(filename):
     plt.savefig(filename+".pdf")
 
@@ -150,8 +183,8 @@ def refined_fit(f_region, s21_region, tau, plot_mode='none', filename=None):
             plt.show()
 
             plt.figure(figsize=(8, 6))
-            plt.scatter(f_region, np.abs(s21_region), label='Data')
-            plt.plot(f_region, np.abs(t21_fit), color='r', label='Fit')
+            plt.scatter(f_region, 20*np.log10(np.abs(s21_region)), label='Data')
+            plt.plot(f_region, 20*np.log10(np.abs(t21_fit)), color='r', label='Fit')
             plt.xlabel("Frequency (Hz)")
             plt.ylabel("Magnitude |S21|")
             plt.title("Magnitude Fit")
@@ -172,8 +205,8 @@ def refined_fit(f_region, s21_region, tau, plot_mode='none', filename=None):
             ax1.legend()
             ax1.axis('equal')
             ax1.grid(True)
-            ax2.plot(f_region * 1e-9, np.abs(s21_region), '.', label='Data')
-            ax2.plot(f_region * 1e-9, np.abs(t21_fit), color='r', label='Fit')
+            ax2.plot(f_region * 1e-9, 20*np.log10(np.abs(s21_region)), '.', label='Data')
+            ax2.plot(f_region * 1e-9, 20*np.log10(np.abs(t21_fit)), color='r', label='Fit')
             ax2.set_xlabel("Frequency (GHz)")
             ax2.set_ylabel("Magnitude |S21|")
             ax2.set_title("Magnitude Fit")
