@@ -14,44 +14,52 @@ class MicrowaveDevice:
             return np.array([[1, z], [0, 1]])
         else: 
             return np.array([[1, 0], [1/z, 1]])
-        
-    #SQUID Entity: Acts as a non-linear inductor, simply calculates this inductance based off of input flux (given by mutual Inductance) Componants: Mutual Inductance, Inductance. Should be flexible to include multiple inputs with different couplings (Flux Ramp, TES ...) Params: SQUID params, Inputs: Flux, Outputs: Inductance
 
 class SQUID(MicrowaveDevice):
     """
     Models a SQUID as a flux-tunable inductor. Its impedance is determined
     by the total external magnetic flux applied to its loop.
-
-    Args:
-       I_c (float): The critical current of the Josephson junction (in Amps).
-       L_loop (float): The geometric loop inductance of the SQUID (in Henrys).
-       phi_ext (float, optional): The initial external flux bias (in Webers). Defaults to 0.0.
     """
-    def __init__(self, I_c, L_loop, phi_ext=0.0):
-        self.I_c = I_c
-        self.L_loop = L_loop
+    def __init__(self, L_j, L_s, phi_ext=0.0):
+        self.L_j = L_j
+        self.L_s = L_s
         self.phi_ext = phi_ext
         self.PHI_0 = 2.067e-15  # Flux quantum
+        self.flux_lines = {}
+        
+    def add_flux_line(self, name, M, initial_current=0.0):
+        line = FluxLine(name, M, initial_current)
+        self.flux_lines[name] = line
+        return line
+        
+    def set_current(self, name, new_I):
+        if name in self.flux_lines:
+            self.flux_lines[name].I = new_I
+        else:
+            raise KeyError(f"Flux line '{name}' does not exist on this SQUID.")
+        
+    def get_total_flux(self):
+        total_flux = self.phi_ext
+        for line in self.flux_lines.values():
+            total_flux += line.get_flux()
+        return total_flux
     
-    def set_flux(self,phi):
+    def set_flux(self, phi):
         self.phi_ext = phi
 
     def get_L(self):
-        cos_term = np.cos(np.pi * self.phi_ext / self.PHI_0)
-
+        phi = self.get_total_flux()
+        cos_term = np.cos(np.pi * phi / self.PHI_0)
         if abs(cos_term) < 1e-9:
             return float('inf')
 
-        L_j = self.PHI_0 / (2 * np.pi * self.I_c * abs(cos_term))
-        
-        return self.L_loop + L_j
+        L_j_tuned = self.L_j / abs(cos_term)
+        return self.L_s + L_j_tuned
         
     def Z(self, f):
         omega = 2 * np.pi * f
         return 1j * omega * self.get_L()
 
-#Resonator Entity: A resonant frequency function in a transmission. Resonant frequency changes based on inductive load. : Componants: Resonance Params, Will be coupled to an inductor componant, which is coupled to a SQUID. Params: Resonator Params, Inputs: Inductance, Outputs: Resonant Params, S21
-    
 class Resonator(MicrowaveDevice):
     def __init__(self, length, load, v_p=1.15e8, Qi=100000, Z0=50):
         self.length = length
@@ -63,25 +71,27 @@ class Resonator(MicrowaveDevice):
     def Z(self, f):
         if f == 0: return float('inf')
         
-        # Pure transmission line physics (no phenomenological fr inputs here!)
         beta = 2 * np.pi * f / self.v_p
         alpha = beta / (2 * self.Qi)
         gamma = alpha + 1j * beta
         
         zl_val = self.load.Z(f) 
         
-        # Terminated waveguide impedance
         num = zl_val + self.Z0 * np.tanh(gamma * self.length)
         den = self.Z0 + zl_val * np.tanh(gamma * self.length)
         
         return self.Z0 * (num / den)
     
-def extract_physical_params(fit_params, load_device, v_p=1.15e8, Z0=50):
+def extract_physical_params(fit_params, load_device, v_p=1.15e8, Z0=50, Cc_in=None):
     fr, Qr, Qc = fit_params[2], fit_params[3], fit_params[4]
     omega = 2 * np.pi * fr
 
     Qi = 1 / (1/Qr - 1/Qc) if (Qr > 0 and Qc > 0 and (1/Qr - 1/Qc) > 1e-12) else 1e12 
-    Cc = (1 / (2 * omega * Z0)) * np.sqrt(np.pi / Qc)
+    
+    if Cc_in is not None:
+        Cc = Cc_in
+    else:
+        Cc = (1 / (2 * omega * Z0)) * np.sqrt(np.pi / Qc)
     
     z_load = load_device.Z(fr)
     L_load = np.imag(z_load) / omega
@@ -89,7 +99,6 @@ def extract_physical_params(fit_params, load_device, v_p=1.15e8, Z0=50):
     Xc = 1 / (omega * Cc)
     XL = omega * L_load
     
-    # Exact series resonance condition mathematically forces the dip to align
     tan_bl = Z0 * (Xc - XL) / (Z0**2 + Xc * XL)
     
     bl = np.arctan(tan_bl)
@@ -106,10 +115,8 @@ class Inductor(MicrowaveDevice):
         omega = 2 * np.pi * f
         return 1j * omega * self.L
 
-#Entity: Screened Inductor (Takes input inductor and screens it with other device with a mutual inductance M)
 class ScreenedInductor(MicrowaveDevice):
     def __init__(self, primary_inductor, screening_device, M):
-
         if not isinstance(primary_inductor, Inductor):
             raise TypeError("The primary_inductor must be an instance of the Inductor class.")
         self.primary_inductor = primary_inductor
@@ -130,14 +137,12 @@ class ScreenedInductor(MicrowaveDevice):
         z_reflected = (omega * self.M)**2 / z_screening
         return z_primary + z_reflected
         
-
 class Capacitor(MicrowaveDevice):
     def __init__(self, C):
         self.C = C
 
     def Z(self, f):
-        if f == 0:
-            return float('inf') 
+        if f == 0: return float('inf') 
         omega = 2 * np.pi * f
         return -1j / (omega * self.C)
     
@@ -148,10 +153,8 @@ class Terminator(MicrowaveDevice):
     def Z(self, f):
         return complex(self.R,0)
 
-
 ### SYSTEMS ###
 
-#VNA System
 class VNA_Simulator:
     def __init__(self, z0=50):
         self.z0 = z0
@@ -179,8 +182,6 @@ class VNA_Simulator:
         return np.array([[s11, s12], [s21, s22]])
     
     def draw_schematic(self, max_draw=4, use_color=True):
-        """Draws a textbook-style circuit diagram, smartly collapsing large arrays and optionally coloring components."""
-        
         num_channels = len(self.chain)
         
         if num_channels <= max_draw:
@@ -191,7 +192,7 @@ class VNA_Simulator:
             has_ellipsis = True
 
         x_start = 2
-        x_spacing = 4
+        x_spacing = 6.5 
         num_slots = len(draw_indices) + (1 if has_ellipsis else 0)
         total_x = x_start + (num_slots * x_spacing) + 2
         
@@ -204,18 +205,19 @@ class VNA_Simulator:
         # --- COLOR PALETTE ---
         if use_color:
             c = {
-                'feed': '#2c3e50',       # Dark Slate
-                'cap': '#27ae60',        # Green
-                'tline_e': '#2980b9',    # Blue edge
-                'tline_f': '#ebf5fb',    # Light blue face
-                'ind': '#d35400',        # Rust Orange
-                'squid': '#8e44ad',      # Purple
-                'res': '#c0392b',        # Red
-                'src': '#16a085',        # Teal
-                'gnd': '#7f8c8d'         # Grey
+                'feed': '#2c3e50',       
+                'cap': '#27ae60',        
+                'tline_e': '#2980b9',    
+                'tline_f': '#ebf5fb',    
+                'ind': '#d35400',        
+                'squid': '#8e44ad',      
+                'res': '#c0392b',        
+                'src': '#16a085',        
+                'gnd': '#7f8c8d',
+                'flux': '#e67e22'        
             }
         else:
-            c = {k: 'k' for k in ['feed', 'cap', 'tline_e', 'ind', 'squid', 'res', 'src', 'gnd']}
+            c = {k: 'k' for k in ['feed', 'cap', 'tline_e', 'ind', 'squid', 'res', 'src', 'gnd', 'flux']}
             c['tline_f'] = 'white'
 
         # --- HELPER FUNCTIONS ---
@@ -274,9 +276,11 @@ class VNA_Simulator:
             x_sq = x_left + 0.4   
             y_sq_bot = y_center - sq_h/2
             
+            # SQUID Loop
             rect = patches.Rectangle((x_sq, y_sq_bot), sq_w, sq_h, fill=False, edgecolor=c['squid'], lw=1.5)
             ax.add_patch(rect)
             
+            # Josephson Junction Cross
             x_jj = x_sq + sq_w
             jj_size = 0.08 
             ax.plot([x_jj-jj_size, x_jj+jj_size], [y_center-jj_size, y_center+jj_size], color=c['squid'], lw=1.5)
@@ -284,11 +288,37 @@ class VNA_Simulator:
             
             if squid_params:
                 m_val_str = f"{squid_params['M'] * 1e12:.1f} pH"
-                ls_val_str = f"{squid_params['L_loop'] * 1e12:.1f} pH"
-                ic_val_str = f"{squid_params['I_c'] * 1e6:.1f} µA"
-                ax.text(x_left -1, y_center, f'$M_c$={m_val_str}', ha='center', va='center', fontsize=9, color='k')
+                ls_val_str = f"{squid_params['L_s'] * 1e12:.1f} pH"
+                lj_val_str = f"{squid_params['L_j'] * 1e12:.1f} pH"
+                ax.text(x_left - 0.1, y_center, f'$M_c$={m_val_str}', ha='right', va='center', fontsize=9, color='k')
                 ax.text(x_sq + sq_w / 2, y_sq_bot + 0.15, f'$L_S$={ls_val_str}', ha='center', fontsize=9, color=c['squid'])
-                ax.text(x_jj + 0.25, y_center+0.3, f'$I_c$={ic_val_str}', ha='center', va='center', fontsize=9, color=c['squid'])
+                ax.text(x_jj + 0.15, y_center+0.35, f'$L_j$={lj_val_str}', ha='left', va='center', fontsize=9, color=c['squid'])
+
+                if 'flux_lines' in squid_params and squid_params['flux_lines']:
+                    flux_x = x_jj + 0.9  # <-- INCREASED: Starts further right from the SQUID
+                    for name, line in squid_params['flux_lines'].items():
+                        y_top = y_center + 0.4
+                        y_bot = y_center - 0.4
+                        
+                        # Draw Inductive coil
+                        y = np.linspace(y_top, y_bot, 50)
+                        x_ind = flux_x + 0.08 * -np.abs(np.sin(3 * np.pi * (y_top - y) / (y_top - y_bot)))
+                        ax.plot(x_ind, y, color=c['flux'], lw=1.5)
+                        
+                        # Draw leads
+                        ax.plot([flux_x, flux_x], [y_top, y_top+0.3], color=c['flux'], lw=1.5)
+                        ax.plot([flux_x, flux_x], [y_bot, y_bot-0.3], color=c['flux'], lw=1.5)
+
+                        # Dashed line for mutual Inductance coupling
+                        ax.plot([x_jj+0.25, flux_x-0.15], [y_center, y_center], ls=':', color='gray', lw=1.0)
+
+                        # Labels
+                        ax.text(flux_x, y_top + 0.4, name, ha='center', va='bottom', fontsize=9, color=c['flux'], fontweight='bold')
+                        ax.text(flux_x + 0.15, y_center + 0.15, f"M={line.M*1e12:.0f} pH", ha='left', va='center', fontsize=8, color='k')
+                        ax.text(flux_x + 0.15, y_center - 0.15, f"I={line.I*1e6:.1f} µA", ha='left', va='center', fontsize=8, color='k')
+
+                        flux_x += 1.3 # <-- INCREASED: Larger gap before the next flux line
+
             else:
                 ax.text(x_left -1, y_center, '$M_c$', ha='center', va='center', fontsize=11, color='k')
                 ax.text(x_sq + sq_w / 2, y_sq_bot + 0.15, '$L_S$', ha='center', fontsize=11, color=c['squid'])
@@ -326,14 +356,12 @@ class VNA_Simulator:
             comp, mode = self.chain[i]
             x = x_start + (current_slot * x_spacing)
             
-            # Tap off feedline
             ax.plot([x, x], [y_feed, y_feed-0.5], color=c['feed'], lw=1.5)
             
             # --- Extract components and their parameters ---
             coupling_cap, tline_res, coupling_ind, squid_params = None, None, None, None
 
             if isinstance(comp, Channel):
-                # This part makes assumptions about the structure of a 'Channel'
                 for sub_comp in comp.components:
                     if isinstance(sub_comp, Capacitor):
                         coupling_cap = sub_comp
@@ -347,11 +375,11 @@ class VNA_Simulator:
                                 squid_dev = screened_ind.screening_device
                                 squid_params = {
                                     'M': screened_ind.M,
-                                    'L_loop': squid_dev.L_loop,
-                                    'I_c': squid_dev.I_c
+                                    'L_s': squid_dev.L_s,
+                                    'L_j': squid_dev.L_j,
+                                    'flux_lines': squid_dev.flux_lines 
                                 }
 
-            # Construct the resonator leg
             y_curr = y_feed - 0.5
             y_curr = draw_cap(x, y_curr, cap=coupling_cap)
             y_curr = draw_tline(x, y_curr, tline=tline_res)
@@ -359,13 +387,10 @@ class VNA_Simulator:
             y_ind_top = y_curr
             y_curr = draw_inductor(x, y_curr, ind=coupling_ind)
             
-            # Add SQUID
             draw_squid(x, (y_ind_top + y_curr) / 2, squid_params=squid_params)
             
-            # Ground the resonator leg
             draw_ground(x, y_curr)
 
-            # Label the channel
             label = comp.name if hasattr(comp, 'name') else f"Channel {i+1}"
             ax.text(x, y_feed + 0.5, label, ha='center', fontweight='bold', fontsize=11)
             
@@ -376,9 +401,7 @@ class VNA_Simulator:
         ax.axis('off')
         plt.tight_layout()
         plt.show()
-        
 
-#Channel System: Can simply add in line a resonator, inductor, SQUID, and input current
 class Channel(MicrowaveDevice):
     def __init__(self, name="Channel"):
         self.name = name
@@ -388,23 +411,17 @@ class Channel(MicrowaveDevice):
         self.components.append(component)
 
     def Z(self, f):
-        if not self.components:
-            return float('inf') 
+        if not self.components: return float('inf') 
         return sum(comp.Z(f) for comp in self.components)
     
     def __repr__(self):
-        # Helps the VNA display identify the channel's contents
         return f"Channel({len(self.components)} comps)"
 
-#Readout System: Can couple many channels, stack their response, demodulate. Probably the most intensive part.
-
-
-### HELPERS ###
-
-    #Flux Ramp Generator: At first a simple current function gnerator, but could couple in resonant frequency as tone tracking and such.
-
-    #Pulse Generator
-
-    #TES Coupler
-    
-    #Resonance Loader
+class FluxLine:
+    def __init__(self, name, M, initial_current=0.0):
+        self.name = name
+        self.M = M
+        self.I = initial_current
+        
+    def get_flux(self):
+        return self.M*self.I
