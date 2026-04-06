@@ -1,172 +1,4 @@
-import math
-import numpy as np
-import cmath
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from scipy.signal import find_peaks
-
-### ENTITIES ###
-class MicrowaveDevice:
-    def Z(self, f): raise NotImplementedError
-    
-    def get_abcd(self, f, mode='series'):
-        z = self.Z(f)
-        if np.isscalar(z):
-            if mode == 'series':
-                return np.array([[1, z], [0, 1]], dtype=complex)
-            else:  # shunt
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    return np.array([[1, 0], [1/z, 1]], dtype=complex)
-        else:
-            N = len(z)
-            abcd = np.zeros((N, 2, 2), dtype=complex)
-            abcd[:, 0, 0] = 1
-            abcd[:, 1, 1] = 1
-            if mode == 'series':
-                abcd[:, 0, 1] = z
-            else:  # shunt
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    abcd[:, 1, 0] = 1 / z
-            return abcd
-
-class SQUID(MicrowaveDevice):
-    """
-    Models a SQUID as a flux-tunable inductor. Its impedance is determined
-    by the total external magnetic flux applied to its loop.
-    """
-    def __init__(self, L_j, L_s, phi_ext=0.0):
-        self.L_j = L_j
-        self.L_s = L_s
-        self.phi_ext = phi_ext
-        self.PHI_0 = 2.067e-15  # Flux quantum
-        self.flux_lines = {}
-        
-    def add_flux_line(self, name, M, initial_current=0.0):
-        line = FluxLine(name, M, initial_current)
-        self.flux_lines[name] = line
-        return line
-        
-    def set_current(self, name, new_I):
-        if name in self.flux_lines:
-            self.flux_lines[name].I = new_I
-        else:
-            raise KeyError(f"Flux line '{name}' does not exist on this SQUID.")
-        
-    def get_total_flux(self):
-        total_flux = self.phi_ext
-        for line in self.flux_lines.values():
-            total_flux += line.get_flux()
-        return total_flux
-    
-    def set_flux(self, phi):
-        self.phi_ext = phi
-
-    def get_L(self):
-        phi = self.get_total_flux()
-        cos_term = np.cos(np.pi * phi / self.PHI_0)
-        abs_cos_term = np.abs(cos_term)
-
-        if np.isscalar(abs_cos_term):
-            L_j_tuned = float('inf') if abs_cos_term < 1e-9 else self.L_j / abs_cos_term
-        else:
-            L_j_tuned = np.where(abs_cos_term < 1e-9, float('inf'), self.L_j / abs_cos_term)
-
-        return self.L_s + L_j_tuned
-    def Z(self, f):
-        omega = 2 * np.pi * f
-        return 1j * omega * self.get_L()
-
-class FluxLine:
-    def __init__(self, name, M, initial_current=0.0):
-        self.name = name
-        self.M = M
-        self.I = initial_current
-        
-    def get_flux(self):
-        #print("Flux on",self.name,"=",self.M*self.I)
-        return float(self.M)*self.I
-class Resonator(MicrowaveDevice):
-    def __init__(self, length, load, v_p=1.15e8, Qi=100000, Z0=50):
-        self.length = length
-        self.load = load
-        self.v_p = v_p
-        self.Qi = Qi
-        self.Z0 = Z0
-        
-    def Z(self, f):
-        if f == 0: return float('inf')
-        
-        beta = 2 * np.pi * f / self.v_p
-        alpha = beta / (2 * self.Qi)
-        gamma = alpha + 1j * beta
-        
-        zl_val = self.load.Z(f) 
-        
-        num = zl_val + self.Z0 * np.tanh(gamma * self.length)
-        den = self.Z0 + zl_val * np.tanh(gamma * self.length)
-        
-        return self.Z0 * (num / den)
-
-    
-class Inductor(MicrowaveDevice):
-    def __init__(self, L):
-        self.L = L
-        
-    def Z(self, f):
-        omega = 2 * np.pi * f
-        return 1j * omega * self.L
-
-class ScreenedInductor(MicrowaveDevice):
-    def __init__(self, primary_inductor, screening_device, M):
-        if not isinstance(primary_inductor, Inductor):
-            raise TypeError("The primary_inductor must be an instance of the Inductor class.")
-        self.primary_inductor = primary_inductor
-        self.screening_device = screening_device
-        self.M = M
-
-    def Z(self, f):
-        if f == 0:
-            return self.primary_inductor.Z(f)
-
-        omega = 2 * np.pi * f
-        z_primary = self.primary_inductor.Z(f)
-        z_screening = self.screening_device.Z(f)
-
-        if np.isscalar(z_screening):
-            if abs(z_screening) < 1e-12:
-                return z_primary + complex(0, float('inf'))
-            if abs(z_screening) == float('inf'):
-                return z_primary
-            z_reflected = (omega * self.M)**2 / z_screening
-        else:
-            z_reflected = np.zeros_like(z_screening, dtype=complex)
-            
-            valid_mask = (np.abs(z_screening) >= 1e-12) & (~np.isinf(z_screening))
-            z_reflected[valid_mask] = (omega * self.M)**2 / z_screening[valid_mask]
-            
-            zero_mask = np.abs(z_screening) < 1e-12
-            z_reflected[zero_mask] = complex(0, float('inf'))
-
-        return z_primary + z_reflected
-
-class Capacitor(MicrowaveDevice):
-    def __init__(self, C):
-        self.C = C
-
-    def Z(self, f):
-        if f == 0: return float('inf') 
-        omega = 2 * np.pi * f
-        return -1j / (omega * self.C)
-    
-class Terminator(MicrowaveDevice):
-    def __init__(self, R):
-        self.R = R
-
-    def Z(self, f):
-        return complex(self.R,0)
-
 ### SYSTEMS ###
-
 class VNA_Simulator:
     def __init__(self, z0=50):
         self.z0 = z0
@@ -217,7 +49,7 @@ class VNA_Simulator:
             draw_indices = list(range(num_channels))
             has_ellipsis = False
         else:
-            draw_indices = [0, 1, 2, num_channels - 1]
+            draw_indices = [0, 1, num_channels - 1]
             has_ellipsis = True
 
         x_start = 2
@@ -378,7 +210,7 @@ class VNA_Simulator:
             if i not in draw_indices:
                 if has_ellipsis and i == 3: 
                     x_ell = x_start + (current_slot * x_spacing)
-                    ax.text(x_ell, y_feed - 2.5, '. . .', ha='center', va='center', fontsize=35, fontweight='bold', color=c['feed'])
+                    ax.text(x_ell, y_feed - 2.5, '. . .', ha='center', va='center', fontsize=25, fontweight='bold', color=c['feed'])
                     current_slot += 1
                 continue
             
@@ -443,90 +275,21 @@ class Channel(MicrowaveDevice):
         if not self.components: return float('inf') 
         return sum(comp.Z(f) for comp in self.components)
     
+    def get_resonance(self, f_guess=None, f_sweep = None):
+        def objective(f):
+            return np.imag(self.Z(f))
+        
+        if f_guess is None:
+            if f_sweep is None:
+                raise ValueError("Must provide either an initial f_guess or an f_sweep array.")
+            Z_array = np.abs(self.Z(f_sweep))
+            f_guess = f_sweep[np.argmin(Z_array)]
+            
+        sol = root_scalar(objective, x0=f_guess, x1=f_guess + 100)
+        
+        return sol.root if sol.converged else f_guess
+        
+        
+    
     def __repr__(self):
         return f"Channel({len(self.components)} comps)"
-
-    
-# HELPERS
-def extract_physical_params(fit_params, load_device, v_p=1.15e8, Z0=50, Cc_in=None):
-    fr, Qr, Qc = fit_params[2], fit_params[3], fit_params[4]
-    omega = 2 * np.pi * fr
-
-    Qi = 1 / (1/Qr - 1/Qc) if (Qr > 0 and Qc > 0 and (1/Qr - 1/Qc) > 1e-12) else 1e12 
-    
-    if Cc_in is not None:
-        Cc = Cc_in
-    else:
-        Cc = (1 / (2 * omega * Z0)) * np.sqrt(np.pi / Qc)
-    
-    z_load = load_device.Z(fr)
-    L_load = np.imag(z_load) / omega
-    
-    Xc = 1 / (omega * Cc)
-    XL = omega * L_load
-    
-    tan_bl = Z0 * (Xc - XL) / (Z0**2 + Xc * XL)
-    
-    bl = np.arctan(tan_bl)
-    if bl < 0: bl += np.pi 
-        
-    length = bl / (omega / v_p)
-    return length, Cc, Qi
-
-def generate_flux_ramp(t, f_ramp, n_phi0):
-    T_ramp = 1 / f_ramp
-    PHI_0 = 2.067e-15
-    phi_amplitude = n_phi0 * PHI_0
-    phi_ramp = (phi_amplitude / T_ramp) * (t % T_ramp)
-    
-    return phi_ramp
-
-def savefig(filename):
-    plt.savefig(filename+".pdf")
-
-def find_all_peaks(f, s21,dist = 1.0e6 , showplot = False, filename = None):
-    s21_flipped = s21.max() - np.abs(s21)
-
-    # Temporary debug plot
-    # plt.figure()
-    # plt.plot(f, s21_flipped)
-    # plt.title("Is this 'flipped' signal showing clear peaks?")
-    # plt.show()
-
-    excluded_frequencies = []
-
-    peaks_full, _ = find_peaks(s21_flipped, prominence=0.05, distance=10)
-
-    collided_peak_indices = set()
-
-    for i in range(len(peaks_full)-1):
-        peak1_idx = peaks_full[i]
-        peak2_idx = peaks_full[i+1]
-
-        if np.abs(f[peak2_idx] - f[peak1_idx]) < dist:
-                collided_peak_indices.add(peak1_idx)
-                collided_peak_indices.add(peak2_idx)
-            
-        for j in range(len(excluded_frequencies)):
-            if np.abs(excluded_frequencies[j] - f[peak1_idx]) < dist:
-                collided_peak_indices.add(peak1_idx)
-        
-
-    final_peaks_list = [p for p in peaks_full if p not in collided_peak_indices]
-    peaks = np.array(final_peaks_list, dtype=int)
-    
-    if(showplot):
-        s21_db = 20*np.log10(np.abs(s21))
-        plt.vlines(x=f[peaks], ymin=s21_db.min(), ymax=s21_db.max(), 
-                color='red', linestyle='--', alpha=0.5, label='Peak Locations')
-
-        plt.plot(f, 20*np.log10(np.abs(s21)))
-        plt.ylabel("S21 (dB)")
-        plt.xlabel("Freq (Hz)")
-        
-        if(filename != None):
-            savefig(filename+"_peak_locations")
-            
-        plt.show()
-        
-    return peaks
