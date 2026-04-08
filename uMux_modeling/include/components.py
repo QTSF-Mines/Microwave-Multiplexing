@@ -32,14 +32,20 @@ class MicrowaveDevice:
 
 class SQUID(MicrowaveDevice):
     """
-    Models a SQUID as a flux-tunable inductor. Its impedance is determined
-    by the total external magnetic flux applied to its loop.
+    Models an RF-SQUID as a flux-tunable inductor. Incorporates
+    self-screening physics via the Kepler equation.
     """
-    def __init__(self, L_j, L_s, phi_ext=0.0):
-        self.L_j = L_j
+    def __init__(self, L_j, L_s, lamb=None, phi_ext=0.0):
         self.L_s = L_s
+        if lamb is not None:
+            self.lamb = lamb
+            self.L_j = L_s / lamb
+        else:
+            self.L_j = L_j
+            self.lamb = L_s / L_j
+            
         self.phi_ext = phi_ext
-        self.PHI_0 = 2.067e-15  # Flux quantum
+        self.PHI_0 = 2.068e-15  
         self.flux_lines = {}
         
     def add_flux_line(self, name, M, initial_current=0.0):
@@ -58,24 +64,29 @@ class SQUID(MicrowaveDevice):
         for line in self.flux_lines.values():
             total_flux += line.get_flux()
         return total_flux
-    
-    def set_flux(self, phi):
-        self.phi_ext = phi
 
-    def get_L(self):
-        phi = self.get_total_flux()
-        cos_term = np.cos(np.pi * phi / self.PHI_0)
-        abs_cos_term = np.abs(cos_term)
+    def phi_of_phie(self, phie):
+        if self.lamb < 1e-6: return phie
+        phi = phie  
+        for _ in range(15):  
+            step = (phi + self.lamb * math.sin(phi) - phie) / (1.0 + self.lamb * math.cos(phi))
+            if abs(step) < 1e-9: break
+            phi -= step
+        return phi
 
-        if np.isscalar(abs_cos_term):
-            L_j_tuned = float('inf') if abs_cos_term < 1e-9 else self.L_j / abs_cos_term
-        else:
-            L_j_tuned = np.where(abs_cos_term < 1e-9, float('inf'), self.L_j / abs_cos_term)
-
-        return self.L_s + L_j_tuned
     def Z(self, f):
-        omega = 2 * np.pi * f
-        return 1j * omega * self.get_L()
+        phie = 2.0 * np.pi * self.get_total_flux() / self.PHI_0
+        phi = self.phi_of_phie(phie)
+        L_squid = self.L_s / (1.0 + self.lamb * math.cos(phi))
+        return 1j * 2 * np.pi * f * L_squid
+    
+    def get_L(self):
+        total_flux = self.get_total_flux()
+        phie = 2.0 * np.pi * total_flux / self.PHI_0
+        phi = self.phi_of_phie(phie)
+        cos_term = math.cos(phi)
+        L_j_tuned = float('inf') if abs(cos_term) < 1e-12 else self.L_j / cos_term
+        return self.L_s + L_j_tuned
 
 class FluxLine:
     def __init__(self, name, M, initial_current=0.0):
@@ -95,8 +106,7 @@ class Resonator(MicrowaveDevice):
         self.Z0 = Z0
         
     def Z(self, f):
-        if f == 0: return float('inf')
-        
+        if np.isscalar(f) and f == 0: return float('inf')
         beta = 2 * np.pi * f / self.v_p
         alpha = beta / (2 * self.Qi)
         gamma = alpha + 1j * beta
@@ -126,7 +136,7 @@ class ScreenedInductor(MicrowaveDevice):
         self.M = M
 
     def Z(self, f):
-        if f == 0:
+        if np.isscalar(f) and f == 0:
             return self.primary_inductor.Z(f)
 
         omega = 2 * np.pi * f
@@ -155,7 +165,7 @@ class Capacitor(MicrowaveDevice):
         self.C = C
 
     def Z(self, f):
-        if f == 0: return float('inf') 
+        if np.isscalar(f) and f == 0: return float('inf') 
         omega = 2 * np.pi * f
         return -1j / (omega * self.C)
     

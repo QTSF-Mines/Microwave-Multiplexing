@@ -1,3 +1,12 @@
+import math
+import numpy as np
+import cmath
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from scipy.signal import find_peaks
+from scipy.optimize import root_scalar
+from include.components import *
+
 ### SYSTEMS ###
 class VNA_Simulator:
     def __init__(self, z0=50):
@@ -63,7 +72,6 @@ class VNA_Simulator:
 
         y_feed = 8
 
-        # --- COLOR PALETTE ---
         if use_color:
             c = {
                 'feed': '#2c3e50',       
@@ -275,20 +283,17 @@ class Channel(MicrowaveDevice):
         if not self.components: return float('inf') 
         return sum(comp.Z(f) for comp in self.components)
     
-    def get_resonance(self, f_guess=None, f_sweep = None):
-        def objective(f):
-            return np.imag(self.Z(f))
-        
-        if f_guess is None:
-            if f_sweep is None:
+    def get_resonance(self, f_guess=None, f_sweep=None):
+        if f_sweep is None:
+            if f_guess is None:
                 raise ValueError("Must provide either an initial f_guess or an f_sweep array.")
-            Z_array = np.abs(self.Z(f_sweep))
-            f_guess = f_sweep[np.argmin(Z_array)]
+
+            f_sweep = np.linspace(f_guess - 2.55e6, f_guess + 2.5e6, 1000)
             
-        sol = root_scalar(objective, x0=f_guess, x1=f_guess + 100)
+        Z_mags = [np.abs(self.Z(f)) for f in f_sweep]
+
         
-        return sol.root if sol.converged else f_guess
-        
+        return f_sweep[np.argmin(Z_mags)]
         
     
     def __repr__(self):
