@@ -3,9 +3,11 @@ import numpy as np
 import cmath
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from scipy.optimize import minimize_scalar
+
 from scipy.signal import find_peaks
 from scipy.optimize import root_scalar
-from umux_modeling.LW_source.include.components import *
+from umux_modeling.LW_uMUX_src.source.include.components import *
 
 ### SYSTEMS ###
 class VNA_Simulator:
@@ -284,17 +286,82 @@ class Channel(MicrowaveDevice):
         return sum(comp.Z(f) for comp in self.components)
     
     def get_resonance(self, f_guess=None, f_sweep=None):
-        if f_sweep is None:
-            if f_guess is None:
-                raise ValueError("Must provide either an initial f_guess or an f_sweep array.")
+        # --- SWEEP MODE ---
+        if f_sweep is not None:
+            # If Z(f) returns an array, Z_mags becomes a 2D grid
+            Z_mags = np.array([np.abs(self.Z(f)) for f in f_sweep])
+            if Z_mags.ndim > 1:
+                # Find the minimum frequency index for EACH flux point (axis=0)
+                return f_sweep[np.argmin(Z_mags, axis=0)]
+            return f_sweep[np.argmin(Z_mags)]
 
-            f_sweep = np.linspace(f_guess - 2.55e6, f_guess + 2.5e6, 1000)
+        if f_guess is None:
+            raise ValueError("Must provide either an initial f_guess or an f_sweep array.")
+
+        # --- OPTIMIZER MODE ---
+        # Test the circuit to see if we are dealing with a scalar or an array
+        test_z = np.abs(self.Z(np.mean(f_guess)))
+        is_array = isinstance(test_z, np.ndarray) and test_z.size > 1
+
+        # 1. Standard Single-Point Minimization
+        if not is_array:
+            def objective(f):
+                return np.abs(self.Z(f))
+
+            res = minimize_scalar(
+                objective, 
+                bounds=(f_guess - 2.55e6, f_guess + 2.5e6), 
+                method='bounded'
+            )
+            if res.success: return res.x
+            else:
+                print(f"Warning: Minimization failed at guess {f_guess}")
+                return f_guess
+
+        # 2. Vectorized Array Minimization
+        num_points = len(test_z)
+        
+        if np.isscalar(f_guess):
+            f_center = np.full(num_points, f_guess, dtype=float)
+        else:
+            f_center = np.asarray(f_guess, dtype=float)
             
-        Z_mags = [np.abs(self.Z(f)) for f in f_sweep]
-
+        a = f_center - 2.55e6
+        b = f_center + 2.5e6
         
-        return f_sweep[np.argmin(Z_mags)]
+        invphi = (math.sqrt(5) - 1) / 2
+        invphi2 = (3 - math.sqrt(5)) / 2
         
+        h = b - a
+        c = a + invphi2 * h
+        d = a + invphi * h
+        
+        fc = np.abs(self.Z(c))
+        fd = np.abs(self.Z(d))
+        
+        tol = 1.0 
+        while np.max(np.abs(h)) > tol:
+            mask = fc < fd
+            
+            new_b = np.where(mask, d, b)
+            new_a = np.where(~mask, c, a)
+            
+            new_d = np.where(mask, c, new_a + invphi * (new_b - new_a))
+            new_c = np.where(mask, new_a + invphi2 * (new_b - new_a), d)
+            
+            eval_f = np.where(mask, new_c, new_d)
+            f_eval_res = np.abs(self.Z(eval_f))
+            
+            fc_new = np.where(mask, f_eval_res, fd)
+            fd_new = np.where(mask, fc, f_eval_res)
+            
+            fc = fc_new
+            fd = fd_new
+            
+            a, b, c, d = new_a, new_b, new_c, new_d
+            h = b - a
+            
+        return 0.5 * (a + b)
     
     def __repr__(self):
         return f"Channel({len(self.components)} comps)"

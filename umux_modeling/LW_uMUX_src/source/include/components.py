@@ -67,17 +67,18 @@ class SQUID(MicrowaveDevice):
 
     def phi_of_phie(self, phie):
         if self.lamb < 1e-6: return phie
-        phi = phie  
+        phi = np.copy(phie) 
+        
         for _ in range(15):  
-            step = (phi + self.lamb * math.sin(phi) - phie) / (1.0 + self.lamb * math.cos(phi))
-            if abs(step) < 1e-9: break
+            step = (phi + self.lamb * np.sin(phi) - phie) / (1.0 + self.lamb * np.cos(phi))
+            if np.max(np.abs(step)) < 1e-9: break
             phi -= step
+            
         return phi
-
     def Z(self, f):
         phie = 2.0 * np.pi * self.get_total_flux() / self.PHI_0
         phi = self.phi_of_phie(phie)
-        L_squid = self.L_s / (1.0 + self.lamb * math.cos(phi))
+        L_squid = self.L_s / (1.0 + self.lamb * np.cos(phi))
         return 1j * 2 * np.pi * f * L_squid
     
     def get_L(self):
@@ -93,10 +94,16 @@ class FluxLine:
         self.name = name
         self.M = M
         self.I = initial_current
+        self.phi = M*initial_current
         
     def get_flux(self):
         #print("Flux on",self.name,"=",self.M*self.I)
         return float(self.M)*self.I
+    
+    def set_flux(self, phi):
+        self.phi = phi
+        self.I = phi/self.M
+    
 class Resonator(MicrowaveDevice):
     def __init__(self, length, load, v_p=1.15e8, Qi=100000, Z0=50):
         self.length = length
