@@ -1,0 +1,4 @@
+numpy
+scipy
+matplotlib
+git+https://github.com/lawanner04/babysmurf.git
