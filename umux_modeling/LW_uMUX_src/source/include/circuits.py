@@ -11,9 +11,13 @@ from umux_modeling.LW_uMUX_src.source.include.components import *
 
 ### SYSTEMS ###
 class VNA_Simulator:
-    def __init__(self, z0=50):
+    def __init__(self, z0=50, P_rf_dBm = None):
         self.z0 = z0
+        self.P_rf = None
+        if P_rf_dBm is not None:
+            self.P_rf = 10**(P_rf_dBm / 10) / 1000
         self.chain = []
+        
 
     def add(self, component, mode='series'):
         self.chain.append((component, mode))
@@ -26,6 +30,10 @@ class VNA_Simulator:
 
         abcd = np.identity(2, dtype=complex) 
         for comp, mode in self.chain:
+            # If component is a channel, update its SQUIDs with RF flux from probe power
+            if isinstance(comp, Channel) and self.P_rf is not None:
+                comp.update_squid_rf_flux(self.P_rf)
+
             comp_abcd = comp.get_abcd(f, mode)
             abcd = abcd @ comp_abcd
 
@@ -277,48 +285,100 @@ class Channel(MicrowaveDevice):
     def __init__(self, name="Channel"):
         self.name = name
         self.components = []
+        self.squids = []
+        self.resonator = None
+        self.screened_inductor = None
+        self.coupling_capacitor = None
+        self._fr_nominal = None
 
     def add(self, component):
+        """Adds a component to the channel and searches for key sub-components."""
         self.components.append(component)
+        self._find_key_components(component)
+
+    def _find_key_components(self, component):
+        """Recursively search for and store important sub-components."""
+        if isinstance(component, Resonator):
+            self.resonator = component
+            if hasattr(component, 'load') and component.load:
+                self._find_key_components(component.load)
+        elif isinstance(component, ScreenedInductor):
+            self.screened_inductor = component
+            if hasattr(component, 'screening_device') and component.screening_device:
+                self._find_key_components(component.screening_device)
+        elif isinstance(component, SQUID):
+            if component not in self.squids:
+                self.squids.append(component)
+        elif isinstance(component, Capacitor):
+            self.coupling_capacitor = component
+
+    def set_nominal_fr(self, fr):
+        self._fr_nominal = fr
 
     def Z(self, f):
         if not self.components: return float('inf') 
         return sum(comp.Z(f) for comp in self.components)
     
-    def get_resonance(self, f_guess=None, f_sweep=None):
-        # --- SWEEP MODE ---
+    def update_squid_rf_flux(self, P_rf):
+        """Calculates RF flux based on probe power and updates the SQUID(s)."""
+        phi_rf_amp = 0.0
+        if self.resonator and self.screened_inductor and P_rf is not None:
+            Ql = getattr(self.resonator, 'Qr', None) 
+            Qc = getattr(self.resonator, 'Qc', None)
+            Z0 = self.resonator.Z0
+            M_c = self.screened_inductor.M
+
+            if (Qc is None or Ql is None) and self.coupling_capacitor and hasattr(self, '_fr_nominal') and self._fr_nominal is not None:
+                Cc = self.coupling_capacitor.C
+                omega_r = 2 * np.pi * self._fr_nominal
+                if Qc is None and omega_r > 0 and Z0 > 0 and Cc > 0:
+                    Qc = np.pi / (4 * (omega_r * Z0 * Cc)**2)
+                if Ql is None and hasattr(self.resonator, 'Qi'):
+                    Qi = self.resonator.Qi
+                    if Qi > 0 and Qc is not None and Qc > 0:
+                        Ql = 1 / (1/Qi + 1/Qc)
+
+            if all(x is not None for x in [Ql, Qc, Z0, M_c]) and P_rf > 0:
+                try:
+                    I_peak = np.sqrt((16 * Ql**2 * P_rf) / (np.pi * Qc * Z0))
+                    phi_rf_amp = M_c * I_peak
+                except (ValueError, RuntimeWarning): # Catches math domain error from sqrt
+                    phi_rf_amp = 0.0
+            
+        for squid in self.squids:
+            squid.phi_rf_amp = phi_rf_amp
+    
+    def get_resonance(self, f_guess=None, f_sweep=None, search_span=5.1e6, fallback_span=15e6, fallback_points=201):
         if f_sweep is not None:
-            # If Z(f) returns an array, Z_mags becomes a 2D grid
             Z_mags = np.array([np.abs(self.Z(f)) for f in f_sweep])
             if Z_mags.ndim > 1:
-                # Find the minimum frequency index for EACH flux point (axis=0)
-                return f_sweep[np.argmin(Z_mags, axis=0)]
+                min_indices = np.argmin(Z_mags, axis=0)
+                return np.array(f_sweep)[min_indices]
             return f_sweep[np.argmin(Z_mags)]
 
         if f_guess is None:
-            raise ValueError("Must provide either an initial f_guess or an f_sweep array.")
+            raise ValueError("Must provide an initial f_guess for optimizer mode.")
 
-        # --- OPTIMIZER MODE ---
-        # Test the circuit to see if we are dealing with a scalar or an array
         test_z = np.abs(self.Z(np.mean(f_guess)))
         is_array = isinstance(test_z, np.ndarray) and test_z.size > 1
 
-        # 1. Standard Single-Point Minimization
         if not is_array:
             def objective(f):
                 return np.abs(self.Z(f))
+            
+            bounds = (f_guess - search_span / 2, f_guess + search_span / 2)
+            res = minimize_scalar(objective, bounds=bounds, method='bounded')
 
-            res = minimize_scalar(
-                objective, 
-                bounds=(f_guess - 2.55e6, f_guess + 2.5e6), 
-                method='bounded'
-            )
-            if res.success: return res.x
-            else:
-                print(f"Warning: Minimization failed at guess {f_guess}")
-                return f_guess
+            is_at_boundary = np.isclose(res.x, bounds[0], atol=1) or np.isclose(res.x, bounds[1], atol=1)
 
-        # 2. Vectorized Array Minimization
+            if not res.success or is_at_boundary:
+                print(f"Warning: Initial resonance find failed or hit boundary near {f_guess/1e9:.4f} GHz. Trying fallback sweep.")
+                fallback_sweep = np.linspace(f_guess - fallback_span / 2, f_guess + fallback_span / 2, fallback_points)
+                # Call ourselves in sweep mode, which is more robust.
+                return self.get_resonance(f_sweep=fallback_sweep)
+            
+            return res.x
+
         num_points = len(test_z)
         
         if np.isscalar(f_guess):

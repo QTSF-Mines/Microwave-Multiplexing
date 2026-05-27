@@ -126,7 +126,8 @@ def initial_fit(f_region, s21_region, tau, plot_mode='none', filename=None):
         plt.show()
     return zc, z_t, r
 
-def refined_fit(f_region, s21_region, tau, plot_mode='none', filename=None):
+
+def refined_fit(f_region, s21_region, tau, plot_mode='none', filename=None, showdata=False):
     def t21_func(f, a, tau, fr, Qr, Qc, phi0):
         delay = np.exp(-2 * np.pi * f * tau * 1.0j)
         resonator_term = (np.exp(1.0j * phi0) * Qr / Qc) / (1 + 2.0j * Qr * (f - fr) / fr)
@@ -162,7 +163,6 @@ def refined_fit(f_region, s21_region, tau, plot_mode='none', filename=None):
                                
         a_fine, tau_fine, fr_fine, Qr_fine, Qc_fine, phi0_fine = popt
         
-        
         perr = np.sqrt(np.diag(pcov))
         dfr_fine = perr[2]
         t21_fit = t21_func(f_region, *popt)
@@ -197,6 +197,7 @@ def refined_fit(f_region, s21_region, tau, plot_mode='none', filename=None):
         elif plot_mode == 'condensed':
             print(f"Fit successful! Resonance Frequency: {fr_fine*1e-9:.6f} +/- {dfr_fine*1e-9:.6f} GHz")
             fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(21, 6))
+            
             ax1.plot(np.real(s21_region), np.imag(s21_region), '.', label='Data')
             ax1.plot(np.real(t21_fit), np.imag(t21_fit), 'r-', label='Fit')
             ax1.set_title('Resonance Circle Fit')
@@ -205,6 +206,7 @@ def refined_fit(f_region, s21_region, tau, plot_mode='none', filename=None):
             ax1.legend()
             ax1.axis('equal')
             ax1.grid(True)
+            
             ax2.plot(f_region * 1e-9, 20*np.log10(np.abs(s21_region)), '.', label='Data')
             ax2.plot(f_region * 1e-9, 20*np.log10(np.abs(t21_fit)), color='r', label='Fit')
             ax2.set_xlabel("Frequency (GHz)")
@@ -212,6 +214,27 @@ def refined_fit(f_region, s21_region, tau, plot_mode='none', filename=None):
             ax2.set_title("Magnitude Fit")
             ax2.legend()
             ax2.grid(True)
+
+            # --- NEW DATA DISPLAY LOGIC HERE ---
+            if showdata:
+                # Create a formatted string of the refined parameters
+                textstr = '\n'.join((
+                    f'$f_r = {fr_fine*1e-9:.6f}$ GHz',
+                    f'$Q_r = {Qr_fine:.1f}$',
+                    f'$Q_c = {Qc_fine:.1f}$',
+                    f'$\phi_0 = {phi0_fine:.3f}$ rad',
+                    f'$a = {a_fine:.4f}$',
+                    f'$\tau = {tau_fine:.3e}$ s'
+                ))
+                
+                # Define text box properties
+                props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
+                
+                # Place text box in the upper left of the Magnitude plot (ax2)
+                # transform=ax2.transAxes means coordinates are fractions of the axes (0 to 1)
+                ax2.text(0.05, 0.95, textstr, transform=ax2.transAxes, fontsize=11,
+                         verticalalignment='top', bbox=props)
+            # -----------------------------------
 
             def phase_func_plot(f, fr, Qr, theta0):
                 return -theta0 + 2 * np.arctan(2 * Qr * (1 - f / fr))
@@ -225,6 +248,7 @@ def refined_fit(f_region, s21_region, tau, plot_mode='none', filename=None):
             ax3.set_title("Initial Phase Fit")
             ax3.legend()
             ax3.grid(True)
+            
             plt.tight_layout()
             if filename is not None:
                 savefig(filename + "_condensed_fit")
